@@ -181,9 +181,9 @@ if run:
     st.session_state["last_run_seed"] = int(seed)
     st.session_state["last_run_days"] = int(simulation_days)
 
-tab_overview, tab_actions, tab_inventory, tab_policy, tab_robustness, tab_optimizer, tab_sensitivity, tab_deals = st.tabs([
+tab_overview, tab_actions, tab_inventory, tab_policy, tab_robustness, tab_optimizer, tab_sensitivity, tab_deals, tab_basket = st.tabs([
     "Executive Overview", "Smart Actions", "Inventory & Expiry", "Policy Comparison",
-    "Multi-Seed Evaluation", "Discount Optimizer", "Sensitivity Analysis", "Today's Deals"
+    "Multi-Seed Evaluation", "Discount Optimizer", "Sensitivity Analysis", "Today's Deals", "Smart Basket Builder"
 ])
 
 with tab_overview:
@@ -559,29 +559,142 @@ with tab_sensitivity:
         st.plotly_chart(px.bar(plot_df, x="Metric", y="Amount (₹)", color="Scenario", barmode="group",
                                title="Normal vs half-strength shopper response"), use_container_width=True)
 
-# STRETCH GOAL 3: shopper-facing deals from the current day-one simulation.
+# Shopper-facing offers: configured markdowns plus a clearly labelled 10% Freshness Saver tier.
+def build_deal_catalog(products, threshold_1, threshold_2, discount_1, discount_2):
+    catalog = products.copy()
+    catalog["Days remaining"] = catalog["shelf_life_days"].astype(int)
+    catalog["Offer type"] = catalog["Days remaining"].apply(
+        lambda d: "Urgent rescue" if d <= threshold_1
+        else "Near-expiry markdown" if d <= threshold_2
+        else "Freshness Saver" if d <= 5 else "Regular price"
+    )
+    catalog["Discount (%)"] = catalog["Days remaining"].apply(
+        lambda d: discount_1 * 100 if d <= threshold_1
+        else discount_2 * 100 if d <= threshold_2
+        else 10 if d <= 5 else 0
+    )
+    catalog["Original price (₹)"] = catalog["original_price"].astype(float)
+    # Keep preview prices above unit cost; final in-store pricing remains a store decision.
+    catalog["Deal price (₹)"] = catalog.apply(
+        lambda row: round(max(float(row["unit_cost"]) * 1.05,
+                              float(row["original_price"]) * (1 - float(row["Discount (%)"]) / 100)), 2), axis=1
+    )
+    catalog["You save (₹)"] = (catalog["Original price (₹)"] - catalog["Deal price (₹)"]).round(2)
+    catalog["Stock available"] = catalog["initial_stock"].astype(int)
+    return catalog
+
+
+deal_catalog = build_deal_catalog(
+    products, int(threshold_1), int(threshold_2), float(discount_1), float(discount_2)
+)
+
 with tab_deals:
     st.markdown("### Today's deals")
-    deals_result = simulate_policy(
-        products, policy="Markdown", seed=int(seed), simulation_days=int(simulation_days),
-        threshold_2_days=int(threshold_2), discount_2_days=float(discount_2) / 100,
-        threshold_1_day=int(threshold_1), discount_1_day=float(discount_1) / 100,
-        demand_sensitivity=float(demand_sensitivity), weekday_lift=float(weekday_lift), weekend_lift=float(weekend_lift),
-    )
-    day_one = deals_result.daily[(deals_result.daily["day"] == 1) & (deals_result.daily["discount_pct"] > 0)].copy()
-    if day_one.empty:
-        st.info("No products qualify for a markdown on simulation day 1. Try adjusting the expiry thresholds.")
+    st.markdown("Fresh picks, limited stock, better prices. Filter offers and find your next save.")
+    st.caption("Preview offers use configured markdown rules plus a 10% Freshness Saver tier for products with 3–5 days of shelf life. Verify actual expiry labels in-store.")
+    deal_controls_a, deal_controls_b, deal_controls_c = st.columns([1.1, 1.2, 1.2])
+    with deal_controls_a:
+        deal_search = st.text_input("Search products", placeholder="e.g. strawberries", key="deal_search")
+    with deal_controls_b:
+        deal_categories = st.multiselect(
+            "Categories", sorted(deal_catalog["category"].dropna().unique().tolist()),
+            default=sorted(deal_catalog["category"].dropna().unique().tolist()), key="deal_categories"
+        )
+    with deal_controls_c:
+        deal_sort = st.selectbox("Sort offers", ["Biggest savings", "Highest discount", "Lowest price", "Fewest days left"], key="deal_sort")
+
+    visible_deals = deal_catalog[(deal_catalog["Discount (%)"] > 0) & deal_catalog["category"].isin(deal_categories)].copy()
+    if deal_search.strip():
+        visible_deals = visible_deals[visible_deals["product_name"].str.contains(deal_search.strip(), case=False, na=False)]
+    sort_map = {
+        "Biggest savings": ("You save (₹)", False),
+        "Highest discount": ("Discount (%)", False),
+        "Lowest price": ("Deal price (₹)", True),
+        "Fewest days left": ("Days remaining", True),
+    }
+    sort_column, sort_ascending = sort_map[deal_sort]
+    visible_deals = visible_deals.sort_values(sort_column, ascending=sort_ascending)
+    total_savings = float(visible_deals["You save (₹)"].sum())
+    dm1, dm2, dm3 = st.columns(3)
+    dm1.metric("Available offers", len(visible_deals))
+    dm2.metric("Lowest deal price", f"₹{visible_deals['Deal price (₹)'].min():,.2f}" if not visible_deals.empty else "—")
+    dm3.metric("Potential savings across one of each", f"₹{total_savings:,.2f}")
+
+    if visible_deals.empty:
+        st.info("No offers match those filters. Try another category or clear the search.")
     else:
-        day_one = day_one.drop_duplicates(subset=["product_id"] if "product_id" in day_one.columns else ["product_name"])
-        deal_columns = st.columns(3)
-        for i, (_, deal) in enumerate(day_one.iterrows()):
-            with deal_columns[i % 3]:
-                st.markdown("---")
-                st.markdown(f"#### {deal['product_name']}")
-                st.caption(str(deal["category"]))
-                price = float(deal["price"])
-                match = products.loc[products["product_name"] == deal["product_name"], "original_price"]
-                original = float(match.iloc[0]) if not match.empty else price
-                st.markdown(f"**₹{price:,.2f}** · ~~₹{original:,.2f}~~")
-                st.success(f"Save {float(deal['discount_pct']):.0f}%")
-                st.caption(f"{int(deal['days_left'])} day(s) remaining in the simulation")
+        category_emoji = {"Dairy": "🥛", "Bakery": "🥐", "Produce": "🥬", "Beverages": "🧃",
+                          "Ready-to-eat": "🥗", "Meat": "🍗", "Seafood": "🐟", "Deli": "🥙"}
+        deal_columns = st.columns(4)
+        for i, (_, deal) in enumerate(visible_deals.iterrows()):
+            with deal_columns[i % 4]:
+                st.markdown(f"""<div style="border:1px solid #dcebe2;border-radius:16px;padding:15px;background:linear-gradient(160deg,#ffffff,#f1faf4);min-height:205px;margin-bottom:12px;box-shadow:0 5px 18px rgba(18,54,42,.05)">
+                    <div style="font-size:2rem">{category_emoji.get(str(deal['category']), '🛒')}</div>
+                    <div style="font-size:.72rem;letter-spacing:.08em;text-transform:uppercase;color:#16835e;font-weight:800;margin-top:8px">{deal['Offer type']}</div>
+                    <div style="font-weight:800;font-size:1.02rem;margin:5px 0 2px;color:#17392d">{deal['product_name']}</div>
+                    <div style="font-size:.82rem;color:#6b7b73">{deal['category']} · {int(deal['Days remaining'])} days shelf life</div>
+                    <div style="margin-top:12px;font-size:1.25rem;font-weight:850;color:#087f5b">₹{deal['Deal price (₹)']:,.2f} <span style="font-size:.82rem;color:#7c8982;text-decoration:line-through;font-weight:500">₹{deal['Original price (₹)']:,.2f}</span></div>
+                    <div style="font-size:.82rem;color:#087f5b;font-weight:750;margin-top:3px">Save ₹{deal['You save (₹)']:,.2f} · {deal['Discount (%)']:.0f}% off</div>
+                    <div style="font-size:.78rem;color:#6b7b73;margin-top:6px">{int(deal['Stock available'])} units listed</div>
+                </div>""", unsafe_allow_html=True)
+        st.markdown("#### Offer list")
+        st.dataframe(
+            visible_deals[["product_name", "category", "Offer type", "Days remaining", "Stock available", "Original price (₹)", "Discount (%)", "Deal price (₹)", "You save (₹)"]].rename(columns={"product_name": "Product", "category": "Category"}),
+            use_container_width=True, hide_index=True
+        )
+
+# NEW INTERACTIVE FEATURE: budget-aware basket builder from current deal offers.
+with tab_basket:
+    st.markdown("### Smart Basket Builder")
+    st.markdown("Build a budget-friendly basket from FreshMargin offers. Change your budget and preferences to update the recommendation instantly.")
+    st.caption("Prototype recommendation: each product is treated as one unit; basket totals use the deal-preview prices above.")
+    basket_left, basket_right = st.columns([1, 1.5])
+    with basket_left:
+        basket_budget = st.slider("Your budget (₹)", 100, 2000, 500, step=50, key="basket_budget")
+        basket_categories = st.multiselect(
+            "Shop from categories", sorted(deal_catalog["category"].dropna().unique().tolist()),
+            default=[c for c in ["Produce", "Bakery", "Dairy"] if c in deal_catalog["category"].unique()],
+            key="basket_categories"
+        )
+        basket_goal = st.radio("What matters most?", ["Fit more items", "Maximise savings"], key="basket_goal")
+        max_items = st.slider("Maximum different items", 1, 12, 6, key="basket_max_items")
+
+    eligible = deal_catalog[(deal_catalog["Discount (%)"] > 0) & deal_catalog["category"].isin(basket_categories)].copy()
+    if basket_goal == "Fit more items":
+        eligible = eligible.sort_values(["Deal price (₹)", "You save (₹)"], ascending=[True, False])
+    else:
+        eligible["Savings per rupee"] = eligible["You save (₹)"] / eligible["Deal price (₹)"].clip(lower=0.01)
+        eligible = eligible.sort_values(["Savings per rupee", "You save (₹)"], ascending=[False, False])
+
+    chosen = []
+    remaining_budget = float(basket_budget)
+    for _, item in eligible.iterrows():
+        if len(chosen) >= int(max_items):
+            break
+        price = float(item["Deal price (₹)"])
+        if price <= remaining_budget:
+            chosen.append(item)
+            remaining_budget -= price
+
+    with basket_right:
+        if not chosen:
+            st.warning("No discounted products fit these choices. Increase your budget or select more categories.")
+        else:
+            basket_df = pd.DataFrame(chosen)
+            basket_total = float(basket_df["Deal price (₹)"].sum())
+            basket_savings = float(basket_df["You save (₹)"].sum())
+            bc1, bc2, bc3 = st.columns(3)
+            bc1.metric("Basket total", f"₹{basket_total:,.2f}")
+            bc2.metric("You save", f"₹{basket_savings:,.2f}")
+            bc3.metric("Budget left", f"₹{basket_budget - basket_total:,.2f}")
+            st.progress(min(1.0, basket_total / max(1, basket_budget)))
+            st.dataframe(
+                basket_df[["product_name", "category", "Deal price (₹)", "Original price (₹)", "You save (₹)"]].rename(columns={"product_name": "Item", "category": "Category"}),
+                use_container_width=True, hide_index=True
+            )
+            st.success(f"Your suggested basket contains {len(chosen)} different item(s), using {basket_total / max(1, basket_budget) * 100:.0f}% of your budget.")
+            st.download_button(
+                "Download my basket",
+                data=basket_df[["product_name", "category", "Deal price (₹)", "Original price (₹)", "You save (₹)"]].to_csv(index=False).encode("utf-8"),
+                file_name="freshmargin_smart_basket.csv", mime="text/csv", key="download_smart_basket"
+            )
