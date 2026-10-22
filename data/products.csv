@@ -1,0 +1,21 @@
+product_id,product_name,category,initial_stock,unit_cost,original_price,shelf_life_days,base_daily_demand
+P001,Milk 1L,Dairy,80,34,50,5,18
+P002,Yogurt Cup,Dairy,100,18,30,7,22
+P003,Paneer 200g,Dairy,55,58,80,6,10
+P004,Cheese Slices,Dairy,45,72,100,14,5
+P005,Brown Bread,Bakery,90,22,35,4,20
+P006,Croissants Pack,Bakery,40,45,70,3,8
+P007,Fresh Strawberries,Produce,50,60,95,4,9
+P008,Bananas 1kg,Produce,70,28,45,6,14
+P009,Spinach Bunch,Produce,60,15,25,3,15
+P010,Tomatoes 1kg,Produce,75,24,40,7,13
+P011,Fresh Orange Juice,Beverages,45,48,75,5,8
+P012,Cut Fruit Bowl,Ready-to-eat,35,42,65,2,7
+P013,Fresh Pasta,Ready-to-eat,30,55,85,5,6
+P014,Chicken Breast 500g,Meat,40,145,210,3,7
+P015,Fish Fillet 400g,Seafood,28,180,260,2,5
+P016,Hummus Tub,Deli,32,38,60,6,6
+P017,Fresh Cream,Dairy,38,42,65,8,7
+P018,Mushrooms 250g,Produce,48,30,48,5,9
+P019,Lettuce Head,Produce,42,20,35,5,8
+P020,Fresh Pizza,Ready-to-eat,25,95,145,3,4
