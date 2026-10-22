@@ -277,8 +277,8 @@ with tab_actions:
     inventory_actions["Days until expiry"] = inventory_actions["shelf_life_days"].astype(int)
     inventory_actions["Current price (₹)"] = inventory_actions["original_price"].astype(float)
     inventory_actions["Suggested discount (%)"] = inventory_actions["shelf_life_days"].apply(
-        lambda days: discount_1 * 100 if days <= threshold_1
-        else discount_2 * 100 if days <= threshold_2 else 0
+        lambda days: discount_1 if days <= threshold_1
+        else discount_2 if days <= threshold_2 else 0
     )
     inventory_actions["Suggested price (₹)"] = (
         inventory_actions["original_price"] * (1 - inventory_actions["Suggested discount (%)"] / 100)
@@ -342,8 +342,8 @@ with tab_inventory:
     inventory = products.copy()
     inventory["expiry_day"] = inventory["shelf_life_days"]
     inventory["suggested_discount"] = inventory["shelf_life_days"].apply(
-        lambda days: discount_1 * 100 if days <= threshold_1
-        else discount_2 * 100 if days <= threshold_2 else 0
+        lambda days: discount_1 if days <= threshold_1
+        else discount_2 if days <= threshold_2 else 0
     )
     inventory["suggested_price"] = (
         inventory["original_price"] * (1 - inventory["suggested_discount"] / 100)
@@ -561,6 +561,7 @@ with tab_sensitivity:
 
 # Shopper-facing offers: configured markdowns plus a clearly labelled 10% Freshness Saver tier.
 def build_deal_catalog(products, threshold_1, threshold_2, discount_1, discount_2):
+    # discount_1 and discount_2 are whole percentages (e.g. 20 means 20%).
     catalog = products.copy()
     catalog["Days remaining"] = catalog["shelf_life_days"].astype(int)
     catalog["Offer type"] = catalog["Days remaining"].apply(
@@ -568,18 +569,24 @@ def build_deal_catalog(products, threshold_1, threshold_2, discount_1, discount_
         else "Near-expiry markdown" if d <= threshold_2
         else "Freshness Saver" if d <= 5 else "Regular price"
     )
-    catalog["Discount (%)"] = catalog["Days remaining"].apply(
-        lambda d: discount_1 * 100 if d <= threshold_1
-        else discount_2 * 100 if d <= threshold_2
+    catalog["Target discount (%)"] = catalog["Days remaining"].apply(
+        lambda d: discount_1 if d <= threshold_1
+        else discount_2 if d <= threshold_2
         else 10 if d <= 5 else 0
     )
     catalog["Original price (₹)"] = catalog["original_price"].astype(float)
     # Keep preview prices above unit cost; final in-store pricing remains a store decision.
     catalog["Deal price (₹)"] = catalog.apply(
-        lambda row: round(max(float(row["unit_cost"]) * 1.05,
-                              float(row["original_price"]) * (1 - float(row["Discount (%)"]) / 100)), 2), axis=1
+        lambda row: round(
+            max(float(row["unit_cost"]) * 1.05,
+                float(row["original_price"]) * (1 - float(row["Target discount (%)"]) / 100)), 2
+        ) if row["Target discount (%)"] > 0 else float(row["original_price"]), axis=1
     )
-    catalog["You save (₹)"] = (catalog["Original price (₹)"] - catalog["Deal price (₹)"]).round(2)
+    catalog["You save (₹)"] = (catalog["Original price (₹)"] - catalog["Deal price (₹)"]).clip(lower=0).round(2)
+    # Show the discount that the final price actually gives.
+    catalog["Discount (%)"] = (
+        (catalog["You save (₹)"] / catalog["Original price (₹)"]) * 100
+    ).round(0)
     catalog["Stock available"] = catalog["initial_stock"].astype(int)
     return catalog
 
@@ -643,7 +650,7 @@ with tab_deals:
             use_container_width=True, hide_index=True
         )
 
-# NEW INTERACTIVE FEATURE: budget-aware basket builder from current deal offers.
+# Budget-aware basket builder from current deal offers.
 with tab_basket:
     st.markdown("### Smart Basket Builder")
     st.markdown("Build a budget-friendly basket from FreshMargin offers. Change your budget and preferences to update the recommendation instantly.")
@@ -693,8 +700,3 @@ with tab_basket:
                 use_container_width=True, hide_index=True
             )
             st.success(f"Your suggested basket contains {len(chosen)} different item(s), using {basket_total / max(1, basket_budget) * 100:.0f}% of your budget.")
-            st.download_button(
-                "Download my basket",
-                data=basket_df[["product_name", "category", "Deal price (₹)", "Original price (₹)", "You save (₹)"]].to_csv(index=False).encode("utf-8"),
-                file_name="freshmargin_smart_basket.csv", mime="text/csv", key="download_smart_basket"
-            )
